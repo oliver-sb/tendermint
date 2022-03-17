@@ -40,6 +40,7 @@ require (
 )
 
 require (
+	github.com/cosmos/btcutil v1.0.4
 	github.com/creachadair/atomicfile v0.2.4
 	github.com/google/go-cmp v0.5.7
 	github.com/valyala/fasthttp v1.30.0

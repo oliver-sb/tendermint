@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/cosmos/btcutil/bech32"
 	"github.com/gogo/protobuf/proto"
 	"github.com/spf13/cobra"
 	"github.com/tendermint/tendermint/internal/jsontypes"
 	"github.com/tendermint/tendermint/libs/log"
+	tmproto "github.com/tendermint/tendermint/proto/tendermint/types"
 	"github.com/tendermint/tendermint/types"
 
 	"github.com/valyala/fasthttp"
@@ -82,7 +84,7 @@ func getValidatorSet(data []byte, logger log.Logger) *types.ValidatorSet {
 		if err := jsontypes.Unmarshal(val.PubKey, &v.PubKey); err != nil {
 			return nil
 		}
-		v.Address = []byte(val.Address)
+		_, v.Address, _ = DecodeAndConvert(string(val.Address))
 		v.VotingPower = val.VotingPower
 		v.ProposerPriority = val.ProposerPriority
 
@@ -126,6 +128,20 @@ func getValidators(url string, logger log.Logger) []*types.Validator {
 	return getValidatorSet(valsetData, logger).Validators
 }
 
+func DecodeAndConvert(bech string) (string, []byte, error) {
+	hrp, data, err := bech32.Decode(bech, 1023)
+	if err != nil {
+		return "", nil, fmt.Errorf("decoding bech32 failed: %w", err)
+	}
+
+	converted, err := bech32.ConvertBits(data, 5, 8, false)
+	if err != nil {
+		return "", nil, fmt.Errorf("decoding bech32 failed: %w", err)
+	}
+
+	return hrp, converted, nil
+}
+
 func run(logger log.Logger) {
 	logger.Info("Run Over")
 
@@ -134,6 +150,11 @@ func run(logger log.Logger) {
 
 	blockData := getData(host+"/blocks/latest", logger)
 	signedHeader := getSignedHeader(blockData, logger)
+	url0 := fmt.Sprintf("%s/blocks/%d", host, signedHeader.Commit.Height)
+	blockData = getData(url0, logger)
+	signedHeader2 := getSignedHeader(blockData, logger)
+	signedHeader.Header = signedHeader2.Header
+
 	protoHeader := signedHeader.ToProto()
 
 	byteData, err := proto.Marshal(protoHeader)
@@ -177,6 +198,59 @@ func run(logger log.Logger) {
 		"Length", len(valset.Validators),
 	)
 
-	fmt.Println(header_proto)
-	fmt.Println(valset_proto)
+	//fmt.Println(header_proto)
+	//fmt.Println(valset_proto)
+
+	lightBlock := types.LightBlock{
+		SignedHeader: signedHeader,
+		ValidatorSet: &valset,
+	}
+
+	lightBlockProto, err := lightBlock.ToProto()
+	if err != nil {
+		logger.Error("LightToProto", "error", err)
+		return
+	}
+	lightBlockData, err := proto.Marshal(lightBlockProto)
+	if err != nil {
+		logger.Error("Marshal", "error", err)
+		return
+	}
+
+	lightBlockEncoded := base64.RawStdEncoding.EncodeToString(lightBlockData)
+	fmt.Println(lightBlockEncoded)
+	//sample := valset.Validators[0].Address
+	//fmt.Println("[Oliver]", sample, len(sample), string(sample), string(valset.Validators[1].Address))
+	//fmt.Println("[Oliver]", string(sample[31:]), len(sample[31:]))
+	//prefix, address, err := DecodeAndConvert(string(sample))
+	//fmt.Println("[Oliver]", prefix, address, string(address), len(address))
+	//fmt.Println("[Oliver]", hex.DecodeString(valset.Validators[0].Address))
+	logger.Info("", "encoded", len(lightBlockEncoded), "byte data", len(lightBlockData), "url", url1, "prefix", hex.EncodeToString(lightBlockData[:10]))
+	logger.Info("Info", "Commit Height", signedHeader.Commit.Height, "Height", signedHeader.Height)
+
+	pb := new(tmproto.LightBlock)
+
+	err = proto.Unmarshal(lightBlockData, pb)
+	if err != nil {
+		logger.Error("Fail To Unmarshal", "Error", err)
+		return
+	}
+
+	lb, err := types.LightBlockFromProto(pb)
+	if err != nil {
+		logger.Error("Fail To LightBlockFromProto", "Error", err)
+		return
+	}
+
+	err = lb.SignedHeader.ValidateBasic(lb.SignedHeader.ChainID)
+	if err != nil {
+		logger.Error("Fail To ValidateBasic", "Error", err)
+		return
+	}
+
+	err = types.VerifyCommitLight(lb.SignedHeader.ChainID, lb.ValidatorSet, lb.SignedHeader.Commit.BlockID, lb.SignedHeader.Height, lb.SignedHeader.Commit)
+	if err != nil {
+		logger.Error("Fail To Verify Commit Light", "Error", err)
+		return
+	}
 }
